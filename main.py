@@ -198,3 +198,58 @@ else:
                 col_pdf.download_button("📄 Download PDF Report", pdf_data, "Weekly_Payroll.pdf", "application/pdf")
             else:
                 st.info("No data recorded for this week yet.")
+                # --- EMPLOYEE VIEW (Strict Single Shift Logic) ---
+    if st.session_state['role'] == 'employee':
+        st.header(f"Employee: {st.session_state['user']}")
+        
+        # 1. Check for today's logs
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        logs_today = c.execute('''SELECT action, timestamp FROM attendance 
+                                 WHERE username = ? AND timestamp LIKE ? 
+                                 ORDER BY timestamp DESC''', 
+                              (st.session_state['user'], f"{today_str}%")).fetchall()
+        
+        # 2. Check if they have already finished for the day
+        already_clocked_out = any(log[0] == 'OUT' for log in logs_today)
+        current_status = logs_today[0][0] if logs_today else 'NEVER_IN'
+
+        if already_clocked_out:
+            # Display Confirmation Code / Receipt Only
+            st.success("✅ SHIFT COMPLETED")
+            st.balloons()
+            
+            # Generate a unique confirmation code based on their last logout time
+            last_out_time = logs_today[0][1]
+            conf_code = f"CONF-{st.session_state['user'][:2].upper()}-{last_out_time[-5:].replace(':','')}"
+            
+            st.markdown(f"""
+            <div style="border:2px dashed #4CAF50; padding:20px; text-align:center; border-radius:10px;">
+                <h3>PUNCH CONFIRMATION</h3>
+                <p>Employee: <b>{st.session_state['user']}</b></p>
+                <p>Status: <b>Shift Closed</b></p>
+                <p>Final Out Time: <b>{last_out_time}</b></p>
+                <hr>
+                <h2 style="color:#4CAF50;">CODE: {conf_code}</h2>
+                <p style="font-size:0.8em;">Please show this to the manager if required.</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.info("You are not allowed to clock in again today. See you tomorrow!")
+
+        else:
+            # Standard Camera & Toggle (Only if they haven't finished the day)
+            cam = st.camera_input("Verify Face")
+            if cam:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                if current_status == 'NEVER_IN':
+                    if st.button("CLOCK IN", use_container_width=True, type="primary"):
+                        c.execute("INSERT INTO attendance VALUES (?, ?, 'IN', 'WEB')", (st.session_state['user'], ts))
+                        conn.commit()
+                        st.rerun()
+                
+                elif current_status == 'IN':
+                    if st.button("CLOCK OUT", use_container_width=True):
+                        c.execute("INSERT INTO attendance VALUES (?, ?, 'OUT', 'WEB')", (st.session_state['user'], ts))
+                        conn.commit()
+                        st.rerun()
