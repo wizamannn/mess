@@ -35,7 +35,7 @@ if not c.fetchone():
     c.execute("INSERT INTO users VALUES ('admin', 'admin123', 'employer', 'approved')")
     conn.commit()
 
-# --- 3. BUSINESS LOGIC ---
+# --- 3. BUSINESS & PDF LOGIC ---
 def get_weekly_stats(df):
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     now = datetime.now()
@@ -53,6 +53,40 @@ def get_weekly_stats(df):
         hours = round(total_sec / 3600, 2)
         report.append({"Employee": user, "Hours": hours, "Pay ($15/hr)": round(hours * 15, 2)})
     return pd.DataFrame(report), start_of_week
+
+def generate_pdf_report(df, week_start):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(200, 10, txt="WEEKLY PAYROLL SUMMARY", ln=True, align='C')
+    pdf.set_font("Arial", size=10)
+    pdf.cell(200, 10, txt=f"Report Date: {datetime.now().strftime('%Y-%m-%d')}", ln=True, align='C')
+    pdf.cell(200, 10, txt=f"Week Starting: {week_start.strftime('%Y-%m-%d')}", ln=True, align='C')
+    pdf.ln(10)
+    
+    # Header
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(60, 10, "Employee Name", 1)
+    pdf.cell(60, 10, "Total Hours", 1)
+    pdf.cell(60, 10, "Total Pay", 1)
+    pdf.ln()
+    
+    # Data
+    pdf.set_font("Arial", size=12)
+    total_payroll = 0
+    for _, row in df.iterrows():
+        pdf.cell(60, 10, str(row['Employee']), 1)
+        pdf.cell(60, 10, str(row['Hours']), 1)
+        pdf.cell(60, 10, f"${row['Pay ($15/hr)']}", 1)
+        pdf.ln()
+        total_payroll += row['Pay ($15/hr)']
+        
+    pdf.ln(5)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(120, 10, "GRAND TOTAL PAYROLL", 1)
+    pdf.cell(60, 10, f"${round(total_payroll, 2)}", 1)
+    
+    return pdf.output(dest='S').encode('latin-1')
 
 # --- 4. APP INTERFACE ---
 st.set_page_config(page_title="Walia Management", layout="wide")
@@ -97,37 +131,31 @@ if not st.session_state['logged_in']:
 else:
     st.sidebar.button("EXIT SYSTEM", on_click=lambda: st.session_state.update({'logged_in': False}))
 
-    # --- EMPLOYEE VIEW (Smart Toggle) ---
     if st.session_state['role'] == 'employee':
         st.header(f"Employee: {st.session_state['user']}")
-        
         last_log = c.execute('''SELECT action FROM attendance WHERE username = ? 
                                 ORDER BY timestamp DESC LIMIT 1''', 
                              (st.session_state['user'],)).fetchone()
         current_status = last_log[0] if last_log else 'OUT'
-        
         cam = st.camera_input("Verify Face")
         if cam:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if current_status == 'OUT':
-                st.info("Status: Clocked Out")
                 if st.button("CLOCK IN", use_container_width=True, type="primary"):
                     c.execute("INSERT INTO attendance VALUES (?, ?, 'IN', 'WEB')", (st.session_state['user'], ts))
                     conn.commit()
                     st.success("Clocked In!")
                     st.rerun()
             else:
-                st.warning("Status: Clocked In")
                 if st.button("CLOCK OUT", use_container_width=True):
                     c.execute("INSERT INTO attendance VALUES (?, ?, 'OUT', 'WEB')", (st.session_state['user'], ts))
                     conn.commit()
                     st.info("Clocked Out!")
                     st.rerun()
 
-    # --- MANAGER VIEW ---
     elif st.session_state['role'] == 'employer':
         st.title("MANAGER CONTROL")
-        t1, t2, t3 = st.tabs(["Employees", "Logs", "Payroll"])
+        t1, t2, t3 = st.tabs(["Employees", "Logs", "Payroll Reports"])
         
         with t1:
             staff = pd.read_sql_query("SELECT username, password, status FROM users WHERE role='employee'", conn)
@@ -145,17 +173,28 @@ else:
                     conn.commit(); st.rerun()
 
         with t2:
-            st.subheader("Manual Log Correction")
+            st.subheader("Attendance Log History")
             logs = pd.read_sql_query("SELECT * FROM attendance ORDER BY timestamp DESC", conn)
             st.dataframe(logs, use_container_width=True)
         
         with t3:
+            st.subheader("Weekly Financial Summary")
             df_all = pd.read_sql_query("SELECT * FROM attendance", conn)
             if not df_all.empty:
                 stats, week_start = get_weekly_stats(df_all)
-                st.write(f"### Weekly Summary")
+                st.write(f"### Pay Period Starting: {week_start.strftime('%B %d, %Y')}")
                 st.dataframe(stats, use_container_width=True)
+                
+                col_ex, col_pdf = st.columns(2)
+                
+                # Excel Download
                 excel_buf = io.BytesIO()
                 with pd.ExcelWriter(excel_buf, engine='xlsxwriter') as writer:
                     stats.to_excel(writer, index=False)
-                st.download_button("📥 Download Excel", excel_buf.getvalue(), "Payroll.xlsx")
+                col_ex.download_button("📥 Download Excel Report", excel_buf.getvalue(), "Payroll_Summary.xlsx")
+                
+                # PDF Download
+                pdf_data = generate_pdf_report(stats, week_start)
+                col_pdf.download_button("📄 Download PDF Report", pdf_data, "Weekly_Payroll.pdf", "application/pdf")
+            else:
+                st.info("No data recorded for this week yet.")
